@@ -1,9 +1,11 @@
 var request = require('request');
 var fs = require('fs');
+var path = require('path');
 var config = require('./config');
 
 var utils = {
-  noop: function () { },
+  noop: function () {
+  },
   tplEngine: function (temp, data, regexp) {
     if (!(Object.prototype.toString.call(data) === '[object Array]')) data = [data];
     var ret = [];
@@ -89,7 +91,7 @@ var get = function (url, option) {
     }
     success(body);
   });
-}
+};
 
 // 接收 DWR 回调
 var dwr = {
@@ -123,8 +125,8 @@ var getAlbums = function (name, success, error) {
       "Content-Type": "application/javascript;charset=utf-8"
     },
     success: function (body) {
-      var body = eval(body);
-      var url = body.cacheFileUrl;
+      var res = eval(body);
+      var url = res.cacheFileUrl;
       var tpl = "http://{url}";
       url = utils.tplEngine(tpl, {
         url: url
@@ -158,10 +160,16 @@ var getPhotos = function (username, album, success, error) {
     "c0-param3=number:" + Date.now(),
     "c0-param4=boolean:false",
     "batchId=777305"].join("\n");
+
   post(url, {
     body: body,
     success: function (body) {
-      var url = eval(body);
+      var url = null;
+      try {
+        url = eval(body);
+      } catch (e) {
+        console.log('获取相册图片 URL 失败: ', JSON.stringify(album), e)
+      }
       if (!url) {
         console.log("获取相册图片 URL 失败: ", JSON.stringify(album));
         success([])
@@ -176,19 +184,24 @@ var getPhotos = function (username, album, success, error) {
         var parts = murl.split("/");
         var num = parts.shift();
         var url = parts.join("/");
-        tpl = "http://img{num}.ph.126.net/{url}"
+        if (url.includes("photo/")) {
+          tpl = "http://img{num}.bimg.126.net/{url}"
+        } else {
+          tpl = "http://img{num}.ph.126.net/{url}"
+        }
         url = utils.tplEngine(tpl, {
           num: num,
           url: url
         });
         return url;
       };
+
       get(url, {
         success: function (photos) {
           photos = convertData(photos);
           photos = photos.map(function (photo) {
             var url = getUrl(photo);
-            var name = photo.desc;
+            var name = safeFileName(photo.desc);
             return {
               name: name,
               url: url,
@@ -203,12 +216,21 @@ var getPhotos = function (username, album, success, error) {
   });
 };
 
+function safeFileName(name) {
+  var MAX_FILE_NAME_LENGTH = 20;
+  var result = encodeURI(name).replace("/", "");
+  return result.length > MAX_FILE_NAME_LENGTH ? result.substr(0, MAX_FILE_NAME_LENGTH) : result;
+}
 
-var mkdir = function (name) {
-  var dir = config.output + name;
-  return fs.mkdirSync(dir);
-};
-/* 
+function mkdir(name) {
+  var dir = path.join(path.resolve(process.cwd(), config.output), name);
+  if (!fs.existsSync(dir)) {
+    return fs.mkdirSync(dir);
+  }
+  return true;
+}
+
+/*
   data 数据格式：
   var data = [{ name: '123', url: 'http://phpto.163.com/test.jpg', albumName: '' }]
 */
@@ -229,7 +251,7 @@ getAlbums(username, function (albums) {
       return startDownload();
     }
     var album = albums[index];
-    var name = album.name;
+    var name = safeFileName(album.name);
     mkdir(name);
     getPhotos(username, album, function (photos) {
       summary.photos += photos.length;
@@ -250,33 +272,40 @@ function download(photo, callback) {
   var tpl = "{output}{albumName}/{name}.jpg"
   var output = config.output;
   name = utils.tplEngine(tpl, {
-    albumName: albumName,
-    name: name,
+    albumName: safeFileName(albumName),
+    name: safeFileName(name),
     output: output
   });
-  var writeStream = fs.createWriteStream(name);
-  var readStream = request(url);
-  readStream.pipe(writeStream);
-  writeStream.on("finish", function () {
-    writeStream.end();
-    callback();
-  });
-};
+  var writeStream;
+  try {
+    writeStream = fs.createWriteStream(name);
+    var readStream = request(url);
+    readStream.pipe(writeStream);
+    writeStream.on("finish", function () {
+      writeStream.end();
+      writeStream = null;
+      callback();
+    });
+  } catch (e) {
+    console.log('下载图片失败：', JSON.stringify(photo), e);
+    writeStream && writeStream.end();
+  }
+}
 
 function startDownload() {
   console.log("开始下载");
   var index = 0;
   var total = data.length;
   var process = function () {
-    var photo = data[index];
     if (index >= total) {
       return console.log("下载完成");
     }
+    var photo = data[index];
+    index++;
     download(photo, function () {
       console.log("正在下载(" + index + "/" + total + ")");
       process();
-    })
-    index++;
+    });
   };
   process();
 }
